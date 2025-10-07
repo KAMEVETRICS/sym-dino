@@ -1,0 +1,590 @@
+<!doctype html>
+
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
+<title>Symbiotic Runner</title>
+<style>
+  :root {
+    --bg:#000;
+    --panel:#06120a;
+    --neon:#00ff88;
+    --muted:#033;
+    --ui:#00d68a;
+    --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+  }
+
+  html, body {
+    height:100%;
+    margin:0;
+    background:var(--bg);
+    font-family:var(--font);
+    -webkit-font-smoothing:antialiased;
+    overflow:hidden; /* prevent page scroll on mobile */
+  }
+
+  .wrap {
+    height:100%;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    padding:0;
+  }
+
+  /* Stage (game container) */
+  .stage {
+    width:100%;
+    height:100%;
+    max-width:880px;
+    max-height:100vh;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    position:relative;
+    box-sizing:border-box;
+  }
+
+  canvas {
+    width:100%;
+    height:100%;
+    border-radius:8px;
+    background: linear-gradient(180deg,#001209 0%, #000 70%);
+    box-shadow: 0 8px 40px rgba(0,255,136,0.03), inset 0 1px 0 rgba(255,255,255,0.02);
+    border: 2px solid rgba(0,255,136,0.06);
+    touch-action: none;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  /* overlays */
+  .overlay {
+    position:absolute;
+    inset:0;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    background:linear-gradient(180deg, rgba(0,0,0,0.75), rgba(0,0,0,0.6));
+    z-index:20;
+    color:var(--neon);
+    text-align:center;
+    padding:20px;
+  }
+
+  .card {
+    max-width:520px;
+    width:90%;
+    padding:20px;
+    border-radius:8px;
+    border:1px solid rgba(0,255,136,0.04);
+  }
+
+  h1 {margin:0 0 8px; letter-spacing:2px; font-size:20px;}
+  p {margin:6px 0; color:rgba(0,255,136,0.9);}
+  button {
+    margin-top:12px;
+    padding:10px 18px;
+    background:var(--neon);
+    border:none;
+    border-radius:8px;
+    color:#001;
+    font-weight:700;
+    cursor:pointer;
+  }
+
+  .status {
+    margin-left:12px;
+    font-size:13px;
+    color:rgba(0,255,136,0.9);
+  }
+
+  .hidden { display:none; }
+
+  /* HUD */
+  .hud, .score {
+    position:absolute;
+    top:10px;
+    font-family:monospace;
+    font-size:14px;
+    color:var(--neon);
+    z-index:30;
+  }
+  .hud { left:12px; }
+  .score { right:12px; text-align:right; }
+
+  /* mobile adjustments */
+  @media (max-width:600px) {
+    .stage {
+      max-width:100%;
+      height:100vh;
+      aspect-ratio:auto;
+    }
+    canvas {
+      border-radius:0;
+      border:none;
+    }
+    h1 {font-size:18px;}
+    button {padding:12px 20px;}
+  }
+</style>
+
+</head>
+<body>
+  <div class="wrap">
+    <div class="stage" id="stage">
+      <canvas id="canvas" width="960" height="360" aria-label="Symbiotic Runner game"></canvas>
+
+```
+  <!-- Start overlay -->
+  <div class="overlay" id="startOverlay" aria-hidden="false">
+    <div class="card">
+      <h1>SYMBIOTIC RUNNER</h1>
+      <p>Tap or press <strong>Space / ↑</strong> to jump. Swipe down to duck.</p>
+      <div style="display:flex;align-items:center;justify-content:center;">
+        <button id="startBtn">START</button>
+        <div class="status" id="artStatus">Player art: loading...</div>
+      </div>
+      
+    </div>
+  </div>
+
+  <!-- Game over overlay (hidden until used) -->
+  <div class="overlay hidden" id="gameOverOverlay" aria-hidden="true" style="flex-direction:column">
+    <div class="card">
+      <h1>GAME OVER</h1>
+      <p id="finalScore">Score: 0</p>
+      <button id="restartBtn">RESTART</button>
+    </div>
+  </div>
+
+  <div class="hud" id="hud">High: 0</div>
+  <div class="score" id="score">Score: 0</div>
+</div>
+```
+
+  </div>
+
+<script>
+/* Symbiotic Runner — final fixed build
+   - Chrome Dino physics/look, re-skinned (neon green)
+   - Fixed aspect ratio canvas, DPR-aware scaling
+   - Mobile: tap to jump, swipe down to duck
+   - Safe player image loading with fallback block
+   - Start screen + instructions only
+*/
+
+// ----- Setup -----
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+
+const startOverlay = document.getElementById('startOverlay');
+const startBtn = document.getElementById('startBtn');
+const artStatus = document.getElementById('artStatus');
+const gameOverOverlay = document.getElementById('gameOverOverlay');
+const restartBtn = document.getElementById('restartBtn');
+const hud = document.getElementById('hud');
+const scoreEl = document.getElementById('score');
+const finalScore = document.getElementById('finalScore');
+
+let DPR = Math.max(1, window.devicePixelRatio || 1);
+
+function resizeCanvas(){
+  // keep internal resolution high (DPR) while size matches CSS
+  const rect = canvas.getBoundingClientRect();
+  canvas.width  = Math.round(rect.width * DPR);
+  canvas.height = Math.round(rect.height * DPR);
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  ctx.imageSmoothingEnabled = true;
+ctx.imageSmoothingQuality = 'high';
+
+}
+window.addEventListener('resize', () => { DPR = Math.max(1, window.devicePixelRatio || 1); resizeCanvas(); });
+resizeCanvas();
+
+// ----- Game constants (tuned to match Dino feel) -----
+const G = {
+  gravity: 0.6,
+  initialSpeed: 4.0,     // slower starting speed
+  maxSpeed: 12,
+  speedIncreaseInterval: 700, // frames between small speed increases
+  speedIncreaseAmount: 0.2,
+  jumpVel: -13.5,        // higher jump than standard for easier avoidance
+  groundHeight: 60,
+  spawnCactusFreq: 90,   // spawn frequency in frames (lower = more)
+  spawnBirdFreq: 520
+};
+
+// ----- Game state -----
+const state = {
+  running: false,
+  frame: 0,
+  speed: G.initialSpeed,
+  score: 0,
+  high: parseInt(localStorage.getItem('symbiotic_high') || '0', 10) || 0,
+  obstacles: [], // cacti
+  birds: [],
+  clouds: []
+};
+
+// ----- Player -----
+const player = {
+  x: 80,
+  y: canvas.height / DPR - G.groundHeight - 48, // will be clamped on resize
+  w: 44,
+  h: 44,
+  vy: 0,
+  grounded: true,
+  ducking: false
+};
+
+// adjust initial y relative to scaled canvas
+function resetPlayerY(){
+  const groundY = (canvas.height / DPR) - G.groundHeight;
+  player.y = groundY - player.h;
+  player.vy = 0;
+  player.grounded = true;
+  player.ducking = false;
+}
+resetPlayerY();
+
+// ----- Player art safe loading -----
+let playerImg = new Image();
+let playerImgLoaded = false;
+let playerImgBroken = false;
+
+function setArtStatus(text){ artStatus.textContent = 'Player art: ' + text; }
+
+playerImg.onload = () => { playerImgLoaded = true; playerImgBroken = false; setArtStatus('loaded'); };
+playerImg.onerror = () => { playerImgLoaded = false; playerImgBroken = true; setArtStatus('failed — using fallback'); };
+
+playerImg.src = 'images/player.webp'; // default; likely missing -> fallback will be used
+
+window.setPlayerArt = function(url){
+  playerImgLoaded = false; playerImgBroken = false; setArtStatus('loading...');
+  playerImg = new Image();
+  playerImg.onload = () => { playerImgLoaded = true; playerImgBroken = false; setArtStatus('loaded'); };
+  playerImg.onerror = () => { playerImgLoaded = false; playerImgBroken = true; setArtStatus('failed — using fallback'); };
+  playerImg.crossOrigin = 'anonymous';
+  playerImg.src = url;
+};
+
+// if cached:
+if(playerImg.complete){
+  if(playerImg.naturalWidth && playerImg.naturalHeight){ playerImgLoaded = true; setArtStatus('loaded'); } 
+  else { playerImgBroken = true; setArtStatus('failed — using fallback'); }
+}
+
+// ----- Utility -----
+function rand(min,max){ return Math.random()*(max-min)+min; }
+function rectsCollide(a,b){ return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y; }
+
+// ----- Spawners -----
+function spawnCactus(){
+  const h = 24 + Math.floor(Math.random()*36);
+  const w = 14 + Math.floor(Math.random()*20);
+  const groundY = (canvas.height / DPR) - G.groundHeight;
+  state.obstacles.push({ x: (canvas.width / DPR) + 20, y: groundY - h, w, h, type:'cactus' });
+}
+function spawnBird(){
+  const y = 120 + Math.random()*60;
+  state.birds.push({ x: (canvas.width / DPR) + 20, y, w:34, h:22, flap:0 });
+}
+function spawnCloud(){
+  const y = 20 + Math.random()*60;
+  state.clouds.push({ x: (canvas.width / DPR) + 20, y, w: 40 + Math.random()*40 });
+}
+
+// ----- Draw helpers -----
+function roundRect(ctx,x,y,w,h,r){
+  const radius = r || 6;
+  ctx.beginPath();
+  ctx.moveTo(x+radius,y);
+  ctx.arcTo(x+w,y,x+w,y+h,radius);
+  ctx.arcTo(x+w,y+h,x,y+h,radius);
+  ctx.arcTo(x,y+h,x,y,radius);
+  ctx.arcTo(x,y,x+w,y,radius);
+  ctx.closePath();
+}
+
+function drawBackground(){
+  // sky gradient
+  const g = ctx.createLinearGradient(0,0,0,canvas.height/DPR);
+  g.addColorStop(0,'#001209'); g.addColorStop(1,'#000');
+  ctx.fillStyle = g; ctx.fillRect(0,0,canvas.width/DPR, canvas.height/DPR);
+
+  // clouds
+  ctx.fillStyle = 'rgba(255,255,255,0.06)';
+  for(const c of state.clouds){
+    ctx.beginPath();
+    ctx.ellipse(c.x, c.y, c.w, 12, 0, 0, Math.PI*2);
+    ctx.fill();
+  }
+
+  // ground
+  ctx.fillStyle = '#021b13';
+  ctx.fillRect(0, (canvas.height/DPR) - G.groundHeight, canvas.width/DPR, G.groundHeight);
+  // ground ticks
+  ctx.fillStyle = 'rgba(0,255,136,0.06)';
+  for(let gx = -((state.frame * state.speed)%60); gx < canvas.width/DPR; gx += 60){
+    ctx.fillRect(gx, (canvas.height/DPR) - 26, 40, 6);
+  }
+}
+
+function drawCacti(){
+  ctx.save();
+  ctx.fillStyle = '#00664a';
+  ctx.shadowColor = 'rgba(0,255,136,0.08)';
+  ctx.shadowBlur = 8;
+  for(const o of state.obstacles){
+    roundRect(ctx, o.x, o.y, o.w, o.h, 4);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawBirds(){
+  ctx.save();
+  ctx.strokeStyle = 'rgba(0,255,136,0.9)';
+  ctx.lineWidth = 2;
+  for(const b of state.birds){
+    // simple wing flap curve
+    const wing = Math.sin(b.flap/6) * 8;
+    ctx.beginPath();
+    ctx.moveTo(b.x, b.y);
+    ctx.quadraticCurveTo(b.x + 10, b.y - wing, b.x + 28, b.y);
+    ctx.stroke();
+    b.flap++;
+  }
+  ctx.restore();
+}
+
+function drawPlayer(){
+  if(playerImgLoaded && !playerImgBroken){
+    try {
+      ctx.drawImage(playerImg, player.x, player.y, player.w, player.h);
+    } catch(err){
+      // fallback to block if drawImage fails unexpectedly
+      playerImgLoaded = false; playerImgBroken = true; setArtStatus('failed — using fallback');
+      drawPlayerFallback();
+    }
+  } else {
+    drawPlayerFallback();
+  }
+}
+
+function drawPlayerFallback(){
+  ctx.save();
+  ctx.fillStyle = 'rgba(0,255,136,0.95)';
+  ctx.shadowColor = 'rgba(0,255,136,0.18)';
+  ctx.shadowBlur = 14;
+  roundRect(ctx, player.x, player.y, player.w, player.h, 6);
+  ctx.fill();
+  ctx.restore();
+}
+
+// ----- Physics & update -----
+function update(){
+  if(!state.running) return;
+
+  state.frame++;
+
+  // Speed increase over time
+  if(state.frame % G.speedIncreaseInterval === 0 && state.speed < G.maxSpeed){
+    state.speed += G.speedIncreaseAmount;
+  }
+
+  // Move clouds slowly (parallax)
+  if(state.frame % 200 === 0) spawnCloud();
+  for(let i = state.clouds.length-1; i >= 0; i--){
+    const c = state.clouds[i];
+    c.x -= state.speed * 0.35;
+    if(c.x + c.w < -50) state.clouds.splice(i,1);
+  }
+
+  // Player physics
+  player.vy += G.gravity;
+  player.y += player.vy;
+  const groundY = (canvas.height / DPR) - G.groundHeight;
+  if(player.y + player.h >= groundY){
+    player.y = groundY - player.h;
+    player.vy = 0;
+    player.grounded = true;
+  } else {
+    player.grounded = false;
+  }
+
+  // spawn obstacles
+  if(state.frame % G.spawnCactusFreq === 0){
+    spawnCactus();
+  }
+  if(state.frame % G.spawnBirdFreq === 0){
+    spawnBird();
+  }
+
+  // move obstacles
+  for(let i = state.obstacles.length -1; i >= 0; i--){
+    const o = state.obstacles[i];
+    o.x -= state.speed;
+    if(o.x + o.w < -50) state.obstacles.splice(i,1);
+
+    // collision
+    const dinoBox = { x: player.x, y: player.y, w: player.w, h: player.h };
+    const obBox = { x: o.x, y: o.y, w: o.w, h: o.h };
+    if(rectsCollide(dinoBox, obBox)) return gameOver();
+  }
+
+  // move birds
+  for(let i = state.birds.length -1; i >= 0; i--){
+    const b = state.birds[i];
+    b.x -= state.speed * 1.15;
+    if(b.x + b.w < -50) state.birds.splice(i,1);
+
+    const birdBox = { x: b.x, y: b.y, w: b.w, h: b.h };
+    const dinoBox = { x: player.x, y: player.y, w: player.w, h: player.h };
+    if(rectsCollide(dinoBox, birdBox)) return gameOver();
+  }
+
+  // score
+  state.score += 0.15;
+  scoreEl.textContent = 'Score: ' + Math.floor(state.score);
+  hud.textContent = 'High: ' + state.high;
+}
+
+// ----- Draw pass -----
+function render(){
+  // clear & draw
+  drawBackground();
+  drawCacti();
+  drawBirds();
+  drawPlayer();
+}
+
+// ----- Game loop (RAF) -----
+function loop(){
+  if(!state.running) return;
+  update();
+  render();
+  requestAnimationFrame(loop);
+}
+
+// ----- Control functions -----
+function jump(){
+  if(!state.running) return;
+  if(player.grounded){
+    player.vy = G.jumpVel;
+    player.grounded = false;
+  }
+}
+
+function startGame(){
+  // reset state
+  state.running = true;
+  state.frame = 0;
+  state.score = 0;
+  state.speed = G.initialSpeed;
+  state.obstacles = [];
+  state.birds = [];
+  state.clouds = [];
+  resetPlayerY();
+  startOverlay.style.display = 'none';
+  gameOverOverlay.classList.add('hidden');
+  gameOverOverlay.style.display = 'none';
+  scoreEl.textContent = 'Score: 0';
+  requestAnimationFrame(loop);
+}
+
+function gameOver(){
+  state.running = false;
+  const sc = Math.floor(state.score);
+  if(sc > state.high){
+    state.high = sc;
+    localStorage.setItem('symbiotic_high', String(state.high));
+  }
+  finalScore.textContent = 'Score: ' + sc;
+  gameOverOverlay.classList.remove('hidden');
+  gameOverOverlay.style.display = 'flex';
+  startOverlay.style.display = 'none';
+  hud.textContent = 'High: ' + state.high;
+}
+
+// restart
+function restart(){
+  gameOverOverlay.classList.add('hidden');
+  gameOverOverlay.style.display = 'none';
+  startOverlay.style.display = 'none'; // 🔧 Hide start overlay permanently
+  startGame(); // 🔧 Immediately restart the game
+}
+
+
+// ----- Input handling -----
+// Keyboard
+document.addEventListener('keydown', (e) => {
+  if(e.code === 'Space' || e.code === 'ArrowUp'){
+    e.preventDefault();
+    if(!state.running){
+      startGame();
+    } else {
+      jump();
+    }
+  }
+  if(e.key && e.key.toLowerCase() === 'r'){
+    restart();
+  }
+});
+
+// Mouse (desktop tap)
+canvas.addEventListener('mousedown', (e) => {
+  if(!state.running){ startGame(); return; }
+  jump();
+});
+
+// Touch controls (mobile): tap to jump; swipe down to duck
+let touchStartY = null;
+let touchStartTime = 0;
+canvas.addEventListener('touchstart', (ev) => {
+  ev.preventDefault();
+  if(!ev.touches || ev.touches.length === 0) return;
+  const y = ev.touches[0].clientY;
+  touchStartY = y;
+  touchStartTime = Date.now();
+  if(!state.running){ startGame(); return; }
+  jump();
+}, {passive:false});
+
+canvas.addEventListener('touchmove', (ev) => {
+  if(!ev.touches || ev.touches.length === 0) return;
+  if(touchStartY === null) return;
+  const y = ev.touches[0].clientY;
+  const diff = y - touchStartY;
+  // If user swipes down quickly we simulate a duck by applying downward velocity
+  if(diff > 50){
+    player.vy = 8;
+  }
+}, {passive:false});
+
+canvas.addEventListener('touchend', () => {
+  touchStartY = null;
+});
+
+// UI buttons
+startBtn.addEventListener('click', startGame);
+restartBtn.addEventListener('click', restart);
+
+// Keep player vertical position correct after CSS resize
+function recomputeLayout(){
+  resizeCanvas();
+  resetPlayerY();
+}
+window.addEventListener('orientationchange', recomputeLayout);
+window.addEventListener('load', recomputeLayout);
+
+// initial hud
+hud.textContent = 'High: ' + state.high;
+
+// Prevent double-touch zoom etc. are controlled by viewport meta tags above
+// End of script
+</script>
+
+</body>
+</html>
+
